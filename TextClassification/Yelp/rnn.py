@@ -41,13 +41,13 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def get_args():
-    parser = argparse.ArgumentParser('time series forecasting in the financial sector')
+    parser = argparse.ArgumentParser('text classfication of yelp review')
 
     parser.add_argument('--cpu', action='store_true', help='wheather to use cpu , if not set, use gpu')
     parser.add_argument('--seed', type=int, default=42, help='random seed')
 
     parser.add_argument('--epoch', type=int, default=300)
-    parser.add_argument('--batch_size', type=int, default=512)
+    parser.add_argument('--batch_size', type=int, default=1024)
     parser.add_argument('--train_valid_ratio', type=float, default=0.2)
     parser.add_argument('--optim', type=str, default='adam', choices=['sgd','adam','adamw'])
     parser.add_argument('--loss_method', type=str, default='ce', choices=['mse', 'ce'])
@@ -85,7 +85,7 @@ def train_valid_split(data, train_valid_ratio):
 
 ### Dataset
 class TextDataset(Dataset):
-    def __init__(self, data, max_token=1000):
+    def __init__(self, data, max_token=512):
         self.features = data["text"]
         self.tokens = self.features.apply(lambda text : vocab(tokenizer(text)))
         self.tokens = self.tokens.apply(lambda token : token[:max_token]+[0]*max(0,max_token-len(token)))
@@ -104,16 +104,34 @@ class TextDataset(Dataset):
 class RNNClassifier(nn.Module):
     def __init__(self, device):
         super().__init__()
-        self.embedding_layer = nn.Embedding(num_embeddings=len(vocab), embedding_dim=50)
-        self.rnn = nn.RNN(input_size=50, hidden_size=50, num_layers=1, batch_first=True)
-        self.linear = nn.Linear(50, 5)
         self.device = device
+        self.embedding_dim = 100
+        self.num_layers = 2
+        self.hidden_dim = 100
+        self.embedding_layer = nn.Embedding(num_embeddings=len(vocab), embedding_dim=self.embedding_dim)
+        self.rnn = nn.RNN(input_size=self.embedding_dim, hidden_size=self.hidden_dim, num_layers=self.num_layers, batch_first=True)
+        self.lstm = nn.LSTM(input_size=self.embedding_dim, hidden_size=self.hidden_dim, num_layers=self.num_layers, 
+                            batch_first=True, bidirectional=True, dropout=0.5)
+        self.linear = nn.Linear(self.hidden_dim, 5)
+        self.linear2 = nn.Linear(self.hidden_dim*2, 5)
+        self.softmax = nn.LogSoftmax(dim=1)
 
     def forward(self, x):
         embeddings = self.embedding_layer(x)
-        hidden = torch.zeros(1, x.size()[0], 50).to(self.device)
-        output, _ = self.rnn(embeddings, hidden)
-        return self.linear(output[:, -1])
+
+        # rnn
+        # hidden = torch.zeros(1, x.size()[0], 50).to(self.device)
+        # output, hidden = self.rnn(embeddings, hidden)
+        # output = self.linear(output[:, -1])
+        # output = self.softmax(output)
+
+        # lstm
+        output, (h_n, c_n) = self.lstm(embeddings)
+        output = torch.cat([h_n[-1, :, :], h_n[-2, :, :]], dim=-1)
+        output = self.linear2(output)
+        output = self.softmax(output)
+
+        return output
     
 ### 保存损失和准确率
 plt.rcParams['font.family'] = 'SimHei'
@@ -305,3 +323,4 @@ def predict(args):
 args = get_args()
 train(args)
 predict(args)
+print(f'Saved Path: {args.saved_dir}')
