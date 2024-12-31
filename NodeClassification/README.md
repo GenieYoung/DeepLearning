@@ -1,0 +1,1 @@
+针对[Cora](https://linqs-data.soe.ucsc.edu/public/lbc/cora.tgz)和[Citeseer](https://linqs-data.soe.ucsc.edu/public/lbc/citeseer.tgz)的节点分类任务
