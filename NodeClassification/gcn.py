@@ -23,6 +23,7 @@ from torch.nn.modules.module import Module
 from torch_geometric.datasets import PPI
 from torch_geometric.data import DataLoader
 from torch_geometric.utils import to_networkx
+from torch_geometric.nn import PairNorm
 
 # %%
 logging.basicConfig(level=logging.INFO)
@@ -42,6 +43,9 @@ def get_args():
     parser.add_argument('--epsilon', type=float, default=1e-8)
     parser.add_argument('--early_stop', type=int, default=50)
     parser.add_argument('--saved_dir', type=str, default='./saved_dir')
+    parser.add_argument('--pairnorm', action='store_true', help='whether to use pairnorm')
+    parser.add_argument('--dropedge', action='store_true', help='whether to use dropedge')
+    parser.add_argument('--activate', type=str, default='relu', choices=['relu', 'tanh'], help='activation function')
 
     args = parser.parse_args()
 
@@ -142,17 +146,21 @@ def load_citeseer():
 # %%
 ### 处理ppi数据
 def load_ppi():
+    # TODO
     ppi_dir = 'ppi_data'
-    train_dataset = PPI(ppi_dir, split='train')
-    val_dataset = PPI(ppi_dir, split='val')
-    test_dataset = PPI(ppi_dir, split='test')
-    g = train_dataset[0]
-    g = to_networkx(g)
-    nx.draw(g,with_labels=g.nodes)
-    plt.show()
-    print(len(train_dataset))
-    print(len(val_dataset))
-    print(len(test_dataset))
+    dataset = PPI(ppi_dir)
+    train_data, val_data, test_data = dataset[0]
+    nodes, edges = train_data[0], train_data[1]
+    nodes_num = nodes.shape[0]
+    adj = np.zeros((nodes_num, nodes_num))
+    for i in range(edges.shape[1]):
+        x = edges[0][i]; y = edges[1][i]
+        adj[x][y] = adj[y][x] = 1
+
+    features = normalize(nodes.numpy())
+    adj = normalize(adj + np.eye(adj.shape[0]))
+
+    print(features.shape, adj.shape)
 
 # %%
 ### 加载数据
@@ -202,22 +210,35 @@ class GraphConvolution(Module):
             return output
         
 class GCN(nn.Module):
-    def __init__(self, nfeat, nhid, nclass, dropout):
+    def __init__(self, nfeat, nhid, nclass, dropout, activate = 'relu', do_pairnorm=False, do_dropedge=False):
         super(GCN, self).__init__()
 
         self.gc1 = GraphConvolution(nfeat, nhid)
         self.gc2 = GraphConvolution(nhid, nclass)
         self.dropout = dropout
 
+        self.activate = F.relu if activate == 'relu' else torch.tanh
+        
+        self.do_pairnorm = do_pairnorm
+        self.do_dropedge = do_dropedge
+        self.pairnorm = PairNorm()
+
     def forward(self, x, adj):
-        x = F.relu(self.gc1(x, adj))
+        if self.do_dropedge:
+            mask = torch.rand(adj.shape).cuda() > 0.8
+            adj=adj * mask
+        x = self.gc1(x, adj)
+        if self.do_pairnorm:
+            x = self.pairnorm(x)
+        x = self.activate(x)
+        #x = F.tanh(self.gc1(x, adj))
         x = F.dropout(x, self.dropout, training=self.training)
         x = self.gc2(x, adj)
         return F.log_softmax(x, dim=1)
 
 # %%
 ### 构建模型
-model = GCN(nfeat=features.shape[1], nhid=args.hidden, nclass=labels.max().item()+1, dropout=args.dropout).to(device)
+model = GCN(nfeat=features.shape[1], nhid=args.hidden, nclass=labels.max().item()+1, dropout=args.dropout, activate=args.activate, do_pairnorm=args.pairnorm, do_dropedge=args.dropedge).to(device)
 model_parameters = filter(lambda p:p.requires_grad,model.parameters())
 n_params = sum([p.numel() for p in model_parameters])
 logger.info('Model Setting ...')
@@ -309,8 +330,8 @@ def train():
                 print('\nModel is not improving, so we halt the training session.')
                 break
 
-            save_figure(str(args.saved_dir/"train_valid_loss.png"), "train_valid_loss", train_loss_record, valid_loss_record)
-            save_figure(str(args.saved_dir/"train_valid_acc.png"), "train_valid_acc", train_acc_record, valid_acc_record)
+            save_figure(str(args.saved_dir/(args.data + '_' + "train_valid_loss.png")), args.data + '_' + "train_valid_loss", train_loss_record, valid_loss_record)
+            save_figure(str(args.saved_dir/(args.data + '_' + "train_valid_acc.png")), args.data + '_' + "train_valid_acc", train_acc_record, valid_acc_record)
     
     except KeyboardInterrupt:
         logger.info('Catch a KeyboardInterupt')
